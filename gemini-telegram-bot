@@ -1,66 +1,77 @@
 import os
 import logging
+from flask import Flask, request
+from threading import Thread
+from telegram import Bot, Update
+from telegram.ext import Dispatcher, CommandHandler, MessageHandler, Filters
 import google.generativeai as genai
-from telegram import Update
-from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackContext
-from flask import Flask
-import threading
 
-# Logging setup
-logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-                    level=logging.INFO)
+# Load environment variables
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+
+# Configure Gemini
+genai.configure(api_key=GEMINI_API_KEY)
+model = genai.GenerativeModel("gemini-1.5-pro")  # Updated model
+
+# Logging
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Load secrets
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+# Flask app
+app = Flask(__name__)
+bot = Bot(token=BOT_TOKEN)
+dispatcher = Dispatcher(bot=bot, update_queue=None, use_context=True)
 
-# Gemini API setup
-genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel("models/gemini-pro")  # FIXED: Added 'models/' prefix
 
-def get_ai_response(user_message: str) -> str:
+def get_ai_response(message: str) -> str:
     try:
-        response = model.generate_content(user_message)
-        return response.text
+        response = model.generate_content(message)
+        return response.text.strip()
     except Exception as e:
         return f"AI Error: {e}"
 
-# Telegram bot commands
-def start(update: Update, context: CallbackContext):
-    update.message.reply_text("Hi! I'm a Gemini AI bot. Send me a message!")
 
-def help_command(update: Update, context: CallbackContext):
-    update.message.reply_text("Send any message and I’ll reply using Gemini AI.")
+def start(update: Update, context):
+    update.message.reply_text("Hello! I am your Gemini AI bot.")
 
-def handle_message(update: Update, context: CallbackContext):
-    user_message = update.message.text
-    ai_response = get_ai_response(user_message)
-    update.message.reply_text(ai_response)
 
-def error_handler(update: Update, context: CallbackContext):
-    logger.error(msg="Exception while handling update:", exc_info=context.error)
+def help_command(update: Update, context):
+    update.message.reply_text("Send any message and I’ll reply with AI.")
 
-# Bot setup in thread
-def run_bot():
-    updater = Updater(BOT_TOKEN, use_context=True)
-    dp = updater.dispatcher
 
-    dp.add_handler(CommandHandler("start", start))
-    dp.add_handler(CommandHandler("help", help_command))
-    dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_message))
-    dp.add_error_handler(error_handler)
+def handle_message(update: Update, context):
+    user_msg = update.message.text
+    ai_reply = get_ai_response(user_msg)
+    update.message.reply_text(ai_reply)
 
-    updater.start_polling()
-    updater.idle()
 
-# Flask app for Render
-app = Flask(__name__)
+def error_handler(update, context):
+    logger.warning(f"Update {update} caused error {context.error}")
 
-@app.route('/')
-def home():
-    return "Bot is running with Gemini AI!"
 
-if __name__ == '__main__':
-    threading.Thread(target=run_bot).start()
-    app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 5000)))
+# Register handlers
+dispatcher.add_handler(CommandHandler("start", start))
+dispatcher.add_handler(CommandHandler("help", help_command))
+dispatcher.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_message))
+dispatcher.add_error_handler(error_handler)
+
+
+@app.route(f"/{BOT_TOKEN}", methods=["POST"])
+def webhook():
+    update = Update.de_json(request.get_json(force=True), bot)
+    dispatcher.process_update(update)
+    return "OK"
+
+
+@app.route("/")
+def index():
+    return "Bot is running!"
+
+
+def run():
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+
+
+if __name__ == "__main__":
+    Thread(target=run).start()
